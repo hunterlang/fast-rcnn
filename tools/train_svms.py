@@ -15,9 +15,9 @@ traditional R-CNN.
 import _init_paths
 from fast_rcnn.config import cfg, cfg_from_file
 from datasets.factory import get_imdb
-from fast_rcnn.test import im_detect
+#from fast_rcnn.test import im_detect
 from utils.timer import Timer
-import caffe
+#import caffe
 import argparse
 import pprint
 import numpy as np
@@ -25,6 +25,49 @@ import numpy.random as npr
 import cv2
 from sklearn import svm
 import os, sys
+
+class DummyNet(object):
+    def __init__(self, dim, imdb):
+        self.params = {
+            "cls_score": [np.zeros((len(imdb.classes), dim)), np.zeros((len(imdb.classes), 1))]
+        }
+
+# todo: hjl: need candidate box indices so we can determine their
+# indices in imfeat.  todo: hjl: sometimes we pass in the boxes
+# themselves if we want all the boxes.
+def im_detect(net, im_idx, cand_box_idx):
+    imfeat = None
+
+    # read the features for this image from the cntk
+    # output file.
+    with open("rois.out") as fp:
+        for i, line in enumerate(fp):
+            if i == im_idx:
+                imfeat = line
+            elif i > im_idx:
+                break
+    
+    # todo: reshape imfeat into a features x candidates
+    # matrix.
+    imfeat = np.fromstring(imfeat, dtype=float, sep=' ')
+    imfeat = np.reshape(4096, 2000)
+
+    # if we get a list (e.g. of ground truth box indices) only keep
+    # around those corresponding features. if we get an int, chop off
+    # the rest of the stuff since that int is the number of boxes we
+    # have for this image.
+    if isinstance(cand_box_idx, list):
+        imfeat = imfeat[:, cand_box_idx]
+    elif isinstance(cand_box_idx, int):
+        imfeat = imfeat[:, 0:cand_box_idx]
+
+    # compute dot product of svm weight matrix with features
+    # and add bias term. 
+    scores = np.dot(net['cls_score'][0], imfeat) + net['cls_score'][1]
+
+    # return the scores corresponding to the candidate box indices.
+    scores = scores[:, cand_box_idx]
+    return scores, cand_box_idx, imfeat
 
 class SVMTrainer(object):
     """
@@ -39,7 +82,7 @@ class SVMTrainer(object):
         self.hard_thresh = -1.0001
         self.neg_iou_thresh = 0.3
 
-        dim = net.params['cls_score'][0].data.shape[1]
+        dim = net.params['cls_score'][0].shape[1]
         scale = self._get_feature_scale()
         print('Feature dim: {}'.format(dim))
         print('Feature scale: {:.3f}'.format(scale))
@@ -55,13 +98,13 @@ class SVMTrainer(object):
         inds = npr.choice(xrange(self.imdb.num_images), size=num_images,
                           replace=False)
         for i_, i in enumerate(inds):
-            im = cv2.imread(self.imdb.image_path_at(i))
-            if roidb[i]['flipped']:
-                im = im[:, ::-1, :]
-            _t.tic()
-            scores, boxes = im_detect(self.net, im, roidb[i]['boxes'])
-            _t.toc()
-            feat = self.net.blobs[self.layer].data
+            #im = cv2.imread(self.imdb.image_path_at(i))
+            #if roidb[i]['flipped']:
+            #im = im[:, ::-1, :]
+            #_t.tic()
+            scores, boxes, feat = im_detect(self.net, i, len(roidb[i]['boxes']))
+            #_t.toc()
+
             total_norm += np.sqrt((feat ** 2).sum(axis=1)).sum()
             count += feat.shape[0]
             print('{}/{}: avg feature norm: {:.3f}'.format(i_ + 1, num_images,
@@ -93,15 +136,16 @@ class SVMTrainer(object):
         num_images = len(roidb)
         # num_images = 100
         for i in xrange(num_images):
-            im = cv2.imread(self.imdb.image_path_at(i))
-            if roidb[i]['flipped']:
-                im = im[:, ::-1, :]
+
             gt_inds = np.where(roidb[i]['gt_classes'] > 0)[0]
             gt_boxes = roidb[i]['boxes'][gt_inds]
             _t.tic()
-            scores, boxes = im_detect(self.net, im, gt_boxes)
+            scores, boxes, feat = im_detect(self.net, i, gt_inds)
             _t.toc()
-            feat = self.net.blobs[self.layer].data
+
+            # hjl: fix to return feat.
+            # feat = self.net.blobs[self.layer]
+
             for j in xrange(1, self.imdb.num_classes):
                 cls_inds = np.where(roidb[i]['gt_classes'][gt_inds] == j)[0]
                 if len(cls_inds) > 0:
@@ -113,8 +157,8 @@ class SVMTrainer(object):
 
     def initialize_net(self):
         # Start all SVM parameters at zero
-        self.net.params['cls_score'][0].data[...] = 0
-        self.net.params['cls_score'][1].data[...] = 0
+        self.net.params['cls_score'][0][...] = 0
+        self.net.params['cls_score'][1][...] = 0
 
         # Initialize SVMs in a smart way. Not doing this because its such
         # a good initialization that we might not learn something close to
@@ -129,8 +173,8 @@ class SVMTrainer(object):
 #        self.net.params['cls_score'][1].data[0] = 0
 
     def update_net(self, cls_ind, w, b):
-        self.net.params['cls_score'][0].data[cls_ind, :] = w
-        self.net.params['cls_score'][1].data[cls_ind] = b
+        self.net.params['cls_score'][0][cls_ind, :] = w
+        self.net.params['cls_score'][1][cls_ind] = b
 
     def train_with_hard_negatives(self):
         _t = Timer()
@@ -138,13 +182,18 @@ class SVMTrainer(object):
         num_images = len(roidb)
         # num_images = 100
         for i in xrange(num_images):
-            im = cv2.imread(self.imdb.image_path_at(i))
-            if roidb[i]['flipped']:
-                im = im[:, ::-1, :]
+#            im = cv2.imread(self.imdb.image_path_at(i))
+#            if roidb[i]['flipped']:
+#                im = im[:, ::-1, :]
             _t.tic()
-            scores, boxes = im_detect(self.net, im, roidb[i]['boxes'])
+            scores, boxes, feat = im_detect(self.net, i, len(roidb[i]['boxes']))
             _t.toc()
-            feat = self.net.blobs[self.layer].data
+
+            # todo: hjl: fix to give actual feat.
+            # should be 4096 x len(roidb[i]['boxes'])
+            feat = self.net.blobs[self.layer]
+
+
             for j in xrange(1, self.imdb.num_classes):
                 hard_inds = \
                     np.where((scores[:, j] > self.hard_thresh) &
@@ -328,6 +377,7 @@ if __name__ == '__main__':
     # fix the random seed for reproducibility
     np.random.seed(cfg.RNG_SEED)
 
+    """
     # set up caffe
     caffe.set_mode_gpu()
     if args.gpu_id is not None:
@@ -336,18 +386,126 @@ if __name__ == '__main__':
     net.name = os.path.splitext(os.path.basename(args.caffemodel))[0]
     out = os.path.splitext(os.path.basename(args.caffemodel))[0] + '_svm'
     out_dir = os.path.dirname(args.caffemodel)
+    """
+
+
+    fh = open('voc2012_trainval.txt', 'w')
+    fh1 = open('voc2012_trainval_rois.txt', 'w')
 
     imdb = get_imdb(args.imdb_name)
+
+    # write out cntk format training file for the images.
+    for idx in range(0, imdb.num_images):
+        path = imdb.image_path_at(idx)
+        fh.write(str(idx) + "\t" + path + "\t0\n")
+        im = cv2.imread(path)
+        h,w = im.shape[0:2]
+
+        mindim = np.min([w,h])
+        maxdim = np.max([w,h])
+
+        scale_factor = 224. / float(mindim)
+        scaled_max = maxdim * scale_factor
+ 
+        crop_x, crop_y = False, False
+
+        if maxdim == w:
+            crop_x = True
+        else:
+            crop_y = True
+
+        crop_offset = round((maxdim*scale_factor - 224) / 2.)
+
+        if crop_offset < 0:
+            crop_offset = 0
+
+        boxes = ""
+        box_counter = 0
+        for box in imdb.roidb[idx]['boxes']:
+
+            # only keep 2000 boxes per image.
+            # todo: make sure you keep ground truth.
+            if box_counter == 2000:
+                break
+
+            # fix output bounding boxes to account for the scale & center crop.
+            x, y, xmax, ymax = np.asarray(box) * scale_factor
+
+
+            # put the box in crop coordinates
+            # todo: xmax < crop_offset; x > crop_offset + 224
+            if crop_x:
+                if x < crop_offset:
+                    x = 0
+                else:
+                    x = x - crop_offset
+                if x > 224:
+                    x = 224
+
+                if xmax > crop_offset + 224:
+                    xmax = 224
+                elif xmax > crop_offset:
+                    xmax = xmax - crop_offset
+                else:
+                    #print "got box with xmax < crop offset."
+                    #print box
+                    # print [w,h]
+                    xmax = 0
+
+            elif crop_y:
+                if y < crop_offset:
+                    y = 0
+                else:
+                    y = y - crop_offset
+                if y > 224:
+                    y = 224
+                if ymax > crop_offset + 224:
+                    ymax = 224
+                elif ymax > crop_offset:
+                    ymax = ymax - crop_offset
+                else:
+                    ymax = 0
+
+            xrel = float(x) / 224.
+            yrel = float(y) / 224.
+            wrel = float(xmax - x) / 224.
+            hrel = float(ymax - y) / 224.
+
+            assert xrel <= 1.0, "something wrong with xrel"
+            assert yrel <= 1.0, "something wrong with yrel"
+            assert wrel >= 0.0, "wrel can't be < 0: xmax {}, x {}".format(xmax, x)
+            assert hrel >= 0.0, "hrel can't be < 0"
+
+            boxes += " {} {} {} {}".format(xrel, yrel, wrel, hrel)
+            box_counter+=1
+
+        # if we have less than 2000 rois per image, fill in the rest.
+        while box_counter < 2000:
+            boxes += " 0 0 0 0"
+            box_counter+=1
+
+        fh1.write(str(idx) + " |rois" + boxes + "\n")
+
+    fh1.close()
+    fh.close()
+
+    # todo: compute & write out correct ROIs
+
+    net = DummyNet(4096, imdb)
+
     print 'Loaded dataset `{:s}` for training'.format(imdb.name)
 
+
+    # (hjl): don't use flipped for now...
+
     # enhance roidb to contain flipped examples
-    if cfg.TRAIN.USE_FLIPPED:
-        print 'Appending horizontally-flipped training examples...'
-        imdb.append_flipped_images()
-        print 'done'
+#    if cfg.TRAIN.USE_FLIPPED:
+#        print 'Appending horizontally-flipped training examples...'
+#        imdb.append_flipped_images()
+#        print 'done'
 
     SVMTrainer(net, imdb).train()
 
-    filename = '{}/{}.caffemodel'.format(out_dir, out)
-    net.save(filename)
-    print 'Wrote svm model to: {:s}'.format(filename)
+ #   filename = '{}/{}.caffemodel'.format(out_dir, out)
+#    net.save(filename)
+#    print 'Wrote svm model to: {:s}'.format(filename)

@@ -12,7 +12,7 @@ import argparse
 from utils.timer import Timer
 import numpy as np
 import cv2
-import caffe
+#import caffe
 from utils.cython_nms import nms
 import cPickle
 import heapq
