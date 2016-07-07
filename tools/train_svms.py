@@ -11,7 +11,7 @@
 Train post-hoc SVMs using the algorithm and hyper-parameters from
 traditional R-CNN.
 """
-
+import random
 import _init_paths
 from fast_rcnn.config import cfg, cfg_from_file
 from datasets.factory import get_imdb
@@ -25,48 +25,131 @@ import numpy.random as npr
 import cv2
 from sklearn import svm
 import os, sys
+from array import array
+from scipy import io
+import cPickle as pickle
+from scipy.sparse import csr_matrix
+
+
+LINE_OFFSETS = []
+SAMPLE_MAP = []
+
+#FEATMAT = np.zeros((2000, 4096))
+#global FEATMAT
+
+# todo: (hjl) rewrite to save on initialization time
+
 
 class DummyNet(object):
     def __init__(self, dim, imdb):
         self.params = {
-            "cls_score": [np.zeros((len(imdb.classes), dim)), np.zeros((len(imdb.classes), 1))]
+            "cls_score": [np.zeros((dim, imdb.num_classes)), np.zeros((1, imdb.num_classes))]
         }
 
-# todo: hjl: need candidate box indices so we can determine their
-# indices in imfeat.  todo: hjl: sometimes we pass in the boxes
-# themselves if we want all the boxes.
-def im_detect(net, im_idx, cand_box_idx):
+
+def im_detect4(net, im_idx, cand_box_idx, doProduct=True):
     imfeat = None
+    inf = open("/mnt/d/samppkl/{}.pkl".format(im_idx), 'rb')
+    sparse = pickle.load(inf)
+    imfeat = sparse.toarray()
+
+    scores = None
+    if doProduct:
+        scores = np.dot(imfeat, net.params['cls_score'][0]) + net.params['cls_score'][1]
+
+    # scores should be #boxes x classes
+    return scores, cand_box_idx, imfeat
+
+
+def im_detect3(net, im_idx, cand_box_idx, doProduct=True):
+    imfeat = None
+    sparse = io.mmread("/mnt/d/sampmm/{}.mm.mtx".format(im_idx))
+    # imfeat = sparse.toarray()
+    imfeat = csr_matrix(sparse)
+
+    scores = None
+    if doProduct:
+        scores = np.dot(imfeat, net.params['cls_score'][0]) + net.params['cls_score'][1]
+
+    # scores should be #boxes x classes
+    return scores, cand_box_idx, imfeat
+
+
+def im_detect2(net, im_idx, cand_box_idx, doProduct=True):
+    imfeat = None
+
+    with open("/mnt/c/sampfeat/{}.arr".format(im_idx)) as inf:
+        float_arr = array('d')
+        float_arr.fromfile(inf, 4096*2000)
+        imfeat = np.array(float_arr.tolist(), dtype='float').reshape((2000, 4096))
+
+    if isinstance(cand_box_idx, list):
+        imfeat = imfeat[cand_box_idx, :]
+    elif isinstance(cand_box_idx, int):
+        imfeat = imfeat[0:cand_box_idx, :]
+
+    # compute dot product of svm weight matrix with features
+    # and add bias term. 
+
+    scores = None
+    if doProduct:
+        scores = np.dot(imfeat, net.params['cls_score'][0]) + net.params['cls_score'][1]
+
+    # scores should be #boxes x classes
+    return scores, cand_box_idx, imfeat
+
+
+def im_detect(net, im_idx, cand_box_idx, doProduct=True):
+    imfeat = None
+
+    global LINE_OFFSETS
+
+    samp_idx = SAMPLE_MAP.index(im_idx)
+    print("reading {}".format(samp_idx))
 
     # read the features for this image from the cntk
     # output file.
-    with open("rois.out") as fp:
-        for i, line in enumerate(fp):
-            if i == im_idx:
-                imfeat = line
-            elif i > im_idx:
-                break
+    count = 0
+    imfeat = np.zeros((2000, 4096))
+
+    first_line = 2000*samp_idx
+    offset = LINE_OFFSETS[first_line]
+    size = LINE_OFFSETS[first_line + 1999] - offset
+
+    with open("/mnt/d/vocsamp.h2.y") as fp:
+        fp.seek(offset)
+        lines = fp.readlines(size)
+
+    fh = open('test.txt', 'w')
+    for i,line in enumerate(lines):
+        fh.write(line)
+        imfeat[i, :] = np.fromstring(line, dtype=float, sep=' ')
+    fh.close()
+        
+    print("done read of {}".format(samp_idx))
     
     # todo: reshape imfeat into a features x candidates
     # matrix.
-    imfeat = np.fromstring(imfeat, dtype=float, sep=' ')
-    imfeat = np.reshape(4096, 2000)
+    #imfeat = np.fromstring(imfeat, dtype=float, sep=' ')
+    # imfeat = np.reshape(4096, 2000)
 
     # if we get a list (e.g. of ground truth box indices) only keep
     # around those corresponding features. if we get an int, chop off
     # the rest of the stuff since that int is the number of boxes we
     # have for this image.
     if isinstance(cand_box_idx, list):
-        imfeat = imfeat[:, cand_box_idx]
+        imfeat = imfeat[cand_box_idx, :]
     elif isinstance(cand_box_idx, int):
-        imfeat = imfeat[:, 0:cand_box_idx]
+        imfeat = imfeat[0:cand_box_idx, :]
 
     # compute dot product of svm weight matrix with features
     # and add bias term. 
-    scores = np.dot(net['cls_score'][0], imfeat) + net['cls_score'][1]
 
-    # return the scores corresponding to the candidate box indices.
-    scores = scores[:, cand_box_idx]
+    scores = None
+    if doProduct:
+        scores = np.dot(imfeat, net.params['cls_score'][0]) + net.params['cls_score'][1]
+
+    # scores should be #boxes x classes
     return scores, cand_box_idx, imfeat
 
 class SVMTrainer(object):
@@ -82,7 +165,18 @@ class SVMTrainer(object):
         self.hard_thresh = -1.0001
         self.neg_iou_thresh = 0.3
 
-        dim = net.params['cls_score'][0].shape[1]
+        # create array of sample indices. maps
+        # position (index in sample) -> true index
+        indices = []
+        with open("sample_idx_map.txt", 'r') as samp_map:
+            for line in samp_map:
+                indices.append(int(line))
+
+        self.sample_map = indices
+        global SAMPLE_MAP 
+        SAMPLE_MAP = indices
+
+        dim = net.params['cls_score'][0].shape[0]
         scale = self._get_feature_scale()
         print('Feature dim: {}'.format(dim))
         print('Feature scale: {:.3f}'.format(scale))
@@ -95,15 +189,17 @@ class SVMTrainer(object):
         roidb = self.imdb.roidb
         total_norm = 0.0
         count = 0.0
-        inds = npr.choice(xrange(self.imdb.num_images), size=num_images,
+
+        # choose random indices, 
+        inds = npr.choice(self.sample_map, size=num_images,
                           replace=False)
         for i_, i in enumerate(inds):
             #im = cv2.imread(self.imdb.image_path_at(i))
             #if roidb[i]['flipped']:
             #im = im[:, ::-1, :]
-            #_t.tic()
-            scores, boxes, feat = im_detect(self.net, i, len(roidb[i]['boxes']))
-            #_t.toc()
+            _t.tic()
+            scores, boxes, feat = im_detect2(self.net, i, len(roidb[i]['boxes']), False)
+            _t.toc()
 
             total_norm += np.sqrt((feat ** 2).sum(axis=1)).sum()
             count += feat.shape[0]
@@ -115,7 +211,8 @@ class SVMTrainer(object):
     def _get_pos_counts(self):
         counts = np.zeros((len(self.imdb.classes)), dtype=np.int)
         roidb = self.imdb.roidb
-        for i in xrange(len(roidb)):
+        #        for i in xrange(len(roidb)):
+        for i in self.sample_map:
             for j in xrange(1, self.imdb.num_classes):
                 I = np.where(roidb[i]['gt_classes'] == j)[0]
                 counts[j] += len(I)
@@ -135,16 +232,12 @@ class SVMTrainer(object):
         roidb = self.imdb.roidb
         num_images = len(roidb)
         # num_images = 100
-        for i in xrange(num_images):
-
+        for idx, i in enumerate(self.sample_map):
             gt_inds = np.where(roidb[i]['gt_classes'] > 0)[0]
             gt_boxes = roidb[i]['boxes'][gt_inds]
             _t.tic()
-            scores, boxes, feat = im_detect(self.net, i, gt_inds)
+            scores, boxes, feat = im_detect2(self.net, i, gt_inds, False)
             _t.toc()
-
-            # hjl: fix to return feat.
-            # feat = self.net.blobs[self.layer]
 
             for j in xrange(1, self.imdb.num_classes):
                 cls_inds = np.where(roidb[i]['gt_classes'][gt_inds] == j)[0]
@@ -152,8 +245,8 @@ class SVMTrainer(object):
                     cls_feat = feat[cls_inds, :]
                     self.trainers[j].append_pos(cls_feat)
 
-            print 'get_pos_examples: {:d}/{:d} {:.3f}s' \
-                  .format(i + 1, len(roidb), _t.average_time)
+            print 'get_pos_examples: {:d}/{:d} ({}/{}) {:.3f}s' \
+                  .format(i + 1, len(roidb), idx, len(self.sample_map), _t.average_time)
 
     def initialize_net(self):
         # Start all SVM parameters at zero
@@ -173,31 +266,29 @@ class SVMTrainer(object):
 #        self.net.params['cls_score'][1].data[0] = 0
 
     def update_net(self, cls_ind, w, b):
-        self.net.params['cls_score'][0][cls_ind, :] = w
-        self.net.params['cls_score'][1][cls_ind] = b
+        self.net.params['cls_score'][0][:, cls_ind] = w
+        self.net.params['cls_score'][1][0, cls_ind] = b
 
     def train_with_hard_negatives(self):
         _t = Timer()
         roidb = self.imdb.roidb
         num_images = len(roidb)
         # num_images = 100
-        for i in xrange(num_images):
+        for idx, i in enumerate(self.sample_map):
 #            im = cv2.imread(self.imdb.image_path_at(i))
 #            if roidb[i]['flipped']:
 #                im = im[:, ::-1, :]
             _t.tic()
-            scores, boxes, feat = im_detect(self.net, i, len(roidb[i]['boxes']))
+            scores, boxes, feat = im_detect2(self.net, i, len(roidb[i]['boxes']))
             _t.toc()
 
-            # todo: hjl: fix to give actual feat.
-            # should be 4096 x len(roidb[i]['boxes'])
-            feat = self.net.blobs[self.layer]
+            print scores.shape
 
-
+            # start at 1--don't worry about background class
             for j in xrange(1, self.imdb.num_classes):
                 hard_inds = \
                     np.where((scores[:, j] > self.hard_thresh) &
-                             (roidb[i]['gt_overlaps'][:, j].toarray().ravel() <
+                             (roidb[i]['gt_overlaps'][:, j].toarray().ravel()[0:scores.shape[0]] <
                               self.neg_iou_thresh))[0]
                 if len(hard_inds) > 0:
                     hard_feat = feat[hard_inds, :].copy()
@@ -205,9 +296,11 @@ class SVMTrainer(object):
                         self.trainers[j].append_neg_and_retrain(feat=hard_feat)
                     if new_w_b is not None:
                         self.update_net(j, new_w_b[0], new_w_b[1])
+                        np.savetxt("svmweights.txt", net.params['cls_score'][0])
+                        np.savetxt("svmbias.txt", net.params['cls_score'][1])
 
             print(('train_with_hard_negatives: '
-                   '{:d}/{:d} {:.3f}s').format(i + 1, len(roidb),
+                   '{:d}/{:d} ({}) {:.3f}s').format(idx + 1, len(self.sample_map), i,
                                                _t.average_time))
 
     def train(self):
@@ -251,7 +344,7 @@ class SVMClassTrainer(object):
         self.pos_weight = pos_weight
         self.dim = dim
         self.feature_scale = feature_scale
-        self.svm = svm.LinearSVC(C=C, class_weight={1: 2, -1: 1},
+        self.svm = svm.LinearSVC(C=C, class_weight='balanced',#class_weight={1: 2, -1: 1},
                                  intercept_scaling=B, verbose=1,
                                  penalty='l2', loss='l1',
                                  random_state=cfg.RNG_SEED, dual=True)
@@ -285,6 +378,10 @@ class SVMClassTrainer(object):
         scores = self.svm.decision_function(X)
         pos_scores = scores[:num_pos]
         neg_scores = scores[num_pos:]
+
+        num_neg_wrong = len(np.where((neg_scores > 0))[0])
+        num_pos_wrong = len(np.where((pos_scores < 0))[0])
+        print("pos wrong: {}/{}; neg wrong: {}/{}".format(num_pos_wrong, num_pos, num_neg_wrong, num_neg))
 
         pos_loss = (self.C * self.pos_weight *
                     np.maximum(0, 1 - pos_scores).sum())
@@ -389,15 +486,19 @@ if __name__ == '__main__':
     """
 
 
-    fh = open('voc2012_trainval.txt', 'w')
-    fh1 = open('voc2012_trainval_rois.txt', 'w')
 
     imdb = get_imdb(args.imdb_name)
 
+    """    fh = open('smallsamp.txt', 'w')
+    fh1 = open('smallsamp.rois.txt', 'w')
+
+    num_samp = 100
+    indices = [random.choice(range(0,imdb.num_images)) for x in range(0, num_samp)]
+
     # write out cntk format training file for the images.
-    for idx in range(0, imdb.num_images):
+    for i, idx in enumerate(indices):
         path = imdb.image_path_at(idx)
-        fh.write(str(idx) + "\t" + path + "\t0\n")
+        fh.write(str(i) + "\t" + path + "\t0\n")
         im = cv2.imread(path)
         h,w = im.shape[0:2]
 
@@ -430,7 +531,6 @@ if __name__ == '__main__':
 
             # fix output bounding boxes to account for the scale & center crop.
             x, y, xmax, ymax = np.asarray(box) * scale_factor
-
 
             # put the box in crop coordinates
             # todo: xmax < crop_offset; x > crop_offset + 224
@@ -484,17 +584,20 @@ if __name__ == '__main__':
             boxes += " 0 0 0 0"
             box_counter+=1
 
-        fh1.write(str(idx) + " |rois" + boxes + "\n")
+        fh1.write(str(i) + " |rois" + boxes + "\n")
 
     fh1.close()
     fh.close()
-
-    # todo: compute & write out correct ROIs
+    """
 
     net = DummyNet(4096, imdb)
 
     print 'Loaded dataset `{:s}` for training'.format(imdb.name)
 
+    global LINE_OFFSETS
+    with open("offsets.txt") as file:
+        for line in file:
+            LINE_OFFSETS.append(int(line))
 
     # (hjl): don't use flipped for now...
 
@@ -504,8 +607,9 @@ if __name__ == '__main__':
 #        imdb.append_flipped_images()
 #        print 'done'
 
+
     SVMTrainer(net, imdb).train()
 
- #   filename = '{}/{}.caffemodel'.format(out_dir, out)
-#    net.save(filename)
+    np.savetxt("svmweights.txt", net.params['cls_score'][0])
+    np.savetxt("svmbias.txt", net.params['cls_score'][1])
 #    print 'Wrote svm model to: {:s}'.format(filename)
