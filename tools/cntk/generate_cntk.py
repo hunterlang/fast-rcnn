@@ -63,6 +63,7 @@ imdb = get_imdb('voc_2012_trainval')
 
 fh = open('trainval2012.txt', 'w')
 fh1 = open('trainval2012.rois.txt', 'w')
+fh2 = open('trainval2012.roilabels.txt', 'w')
 
 #num_samp = 100
 #indices = [random.choice(range(0,imdb.num_images)) for x in range(0, num_samp)]
@@ -98,9 +99,10 @@ for i, idx in enumerate(range(0, imdb.num_images)):
         crop_offset = 0
 
     boxes = ""
+    labels = ""
     box_counter = 0
 
-    for box in imdb.roidb[idx]['boxes']:
+    for boxid, box in enumerate(imdb.roidb[idx]['boxes']):
 
         # only keep 2000 boxes per image.
         # todo: make sure you keep ground truth.
@@ -157,12 +159,22 @@ for i, idx in enumerate(range(0, imdb.num_images)):
         boxes += " {} {} {} {}".format(xrel, yrel, wrel, hrel)
         box_counter+=1
 
+
+        overlaps = imdb.roidb[idx]['gt_overlaps'][boxid, :]
+        maxgt = np.argmax(overlaps)
+        lab = np.zeros((21), dtype=int)
+        lab[maxgt] = 1
+        labels += " {}".format(" ".join([str(x) for x in lab.tolist()]))
+
     # if we have less than 2000 rois per image, fill in the rest.
     while box_counter < 2000:
         boxes += " 0 0 0 0"
+        labels += " 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
         box_counter+=1
 
     fh1.write(str(i) + " |rois" + boxes + "\n")
+    fh2.write(str(i) + " |roiLabels" + labels + "\n")
 
+fh2.close()
 fh1.close()
 fh.close()

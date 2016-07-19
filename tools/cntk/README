@@ -1,0 +1,13 @@
+1. Generate a sample file, e.g. by taking a random sample of images.
+2. Run generate_cntk.py to create the correct CNTK files for running the network
+3. Copy the output of step 2. to your CNTK working directory.
+4. Run CNTK to get the output features h2.y.
+5. Generate newline offsets with generate_offsets.py
+6. Run read_feat.py to convert the large h2.y file into lots of small files (one per image), each of which contains the features for that image's ROIs.
+7. Run train_svms.py to train svms. Reads the files from step 6, but can be reconfigured to use the output of steps 4 and 5 if you want to skip step 6 (see the different im_detect functions in train_svms.py).
+8. Use cntk_test.py to get some accuracy numbers.
+
+TODO:
+- modify cntk_test.py to use NMS before computing accuracy.
+- update generate_cntk.py to correctly compute rois, roilabels.
+- update train_svms.py to work with either a sample or all the data (currently only works with a precomputed sample). 

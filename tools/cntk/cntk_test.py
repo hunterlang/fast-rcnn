@@ -1,3 +1,10 @@
+"""
+Script for loading trained SVM weights and evaluating their performance on the test set.
+TODO: Needs to be updated to do NMS before comparing the numbers to Ross's.
+
+"""
+
+
 import random
 import _init_paths
 from fast_rcnn.config import cfg, cfg_from_file

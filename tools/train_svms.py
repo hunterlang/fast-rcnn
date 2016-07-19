@@ -40,6 +40,7 @@ SAMPLE_MAP = []
 # todo: (hjl) rewrite to save on initialization time
 
 
+
 class DummyNet(object):
     def __init__(self, dim, imdb):
         self.params = {
@@ -47,6 +48,10 @@ class DummyNet(object):
         }
 
 
+
+#############################################################
+################## DIFFERENT IM_LOAD methods ################
+#############################################################
 def im_detect4(net, im_idx, cand_box_idx, doProduct=True):
     imfeat = None
     inf = open("/mnt/d/samppkl/{}.pkl".format(im_idx), 'rb')
@@ -152,6 +157,11 @@ def im_detect(net, im_idx, cand_box_idx, doProduct=True):
     # scores should be #boxes x classes
     return scores, cand_box_idx, imfeat
 
+#############################################################
+################## END IM_LOAD methods ######################
+#############################################################
+
+
 class SVMTrainer(object):
     """
     Trains post-hoc detection SVMs for all classes using the algorithm
@@ -167,6 +177,11 @@ class SVMTrainer(object):
 
         # create array of sample indices. maps
         # position (index in sample) -> true index
+
+        # TODO: Patrick: i changed the script to work with a sample
+        # file--a file where the number on line i is the true index j
+        # of the i-th element of the sample. you have to generate one if you're
+        # working with a sample, or change the file to use all the data.
         indices = []
         with open("sample_idx_map.txt", 'r') as samp_map:
             for line in samp_map:

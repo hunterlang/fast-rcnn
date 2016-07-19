@@ -1,3 +1,12 @@
+"""
+Script that reads in an offset file (generated with make_offsets)
+and a big feature file (the one input to make_offsets) and creates
+one feature file per image.
+
+python read_feat.py <offset_file> <feature_file>
+
+"""
+
 import cPickle as pickle
 from scipy.sparse import csr_matrix
 from scipy import io
@@ -7,17 +16,16 @@ import sys
 
 sample_map = []
 
-with open("sample_idx_map.txt") as samp_map:
-    for line in samp_map:
-        sample_map.append(int(line))
-
+OUTDIR = '/mnt/d/'
+offset_file = sys.argv[1]
+feature_file = sys.argv[2]
 
 offsets = []
-with open('test2007-offsets.txt') as off:
+with open(offset_file) as off:
     for line in off:
         offsets.append(int(line))
 
-INF = open('/mnt/d/test2007.h2.y')
+INF = open(feature_file)
 
 
 for idx in range(0, len(offsets)):
@@ -46,7 +54,7 @@ for idx in range(0, len(offsets)):
         for i, line in enumerate(lines):
             feat[i, :] = np.fromstring(line, dtype=float, sep=' ')
 
-        outa = open('/mnt/d/testfeat/{}.arr'.format(idx), 'wb')
+        outa = open('{}{}.arr'.format(OUTDIR,idx), 'wb')
         float_array = array('d', feat.flatten())
         float_array.tofile(outa)
         outa.close()

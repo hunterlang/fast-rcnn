@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 imdb = get_imdb('voc_2007_test')
 
 image_index = 581
-feat_file = open('patrickplane.OutputNodes.z')
+feat_file = open('/mnt/d/planeGPU-big.OutputNodes.z')
 
 # load scores
 scores = np.zeros((2000, 1000))
@@ -16,13 +16,15 @@ for i, line in enumerate(feat_file):
     scores[i, :] = np.fromstring(line, dtype=float, sep=' ')
 
 labels = np.argmax(scores, axis=1)
+print scores[np.where(labels == 895)]
 # get labels
 scores = scores[:, 895]
 
 
-
 maxval = np.max(scores)
-threshold = maxval*0.69
+threshold = maxval*0.9
+
+print labels[np.where(scores > threshold)]
 
 rois = imdb.roidb[image_index]
 
@@ -54,7 +56,7 @@ for i, box in enumerate(rois['boxes']):
 
     draw = ImageDraw.Draw(im)
 
-    boxcol = 'green' if (scores[i] > threshold and labels[i] == planelabel) else 'red'
+    boxcol = 'green' if (scores[i] > threshold and (labels[i] == planelabel or labels[i] == 404)) else 'red'
 
     if boxcol == 'green':
         draw.rectangle(bbox, outline=boxcol)
